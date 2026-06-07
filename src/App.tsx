@@ -82,7 +82,6 @@ export default function App() {
   
   // UI helper indicators
   const [copiedIndex, setCopiedIndex] = useState<number | null>(null);
-  const [simulating, setSimulating] = useState<string | null>(null);
 
   // Load Data function
   const fetchData = async () => {
@@ -195,29 +194,6 @@ export default function App() {
     }
   };
 
-  // Trigger simulated attacks to verify alerts
-  const triggerSimulation = async (type: "ddos" | "scan" | "exfil") => {
-    setSimulating(type);
-    try {
-      const res = await fetch("/api/sim/trigger", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ type })
-      });
-      const data = await res.json();
-      if (data.success) {
-        fetchData();
-        // Automatically scroll or set analyst view
-        setAnalyzingAlert(data.alert);
-        analyzeWithGemini(data.alert);
-      }
-    } catch (e) {
-      console.error(e);
-    } finally {
-      setSimulating(null);
-    }
-  };
-
   // Resolve alert
   const resolveAlert = async (id: string) => {
     try {
@@ -280,7 +256,7 @@ export default function App() {
           </div>
           <div>
             <h1 className="text-xl font-semibold tracking-tight text-white flex items-center gap-2">
-              NetFlow Monitor <span className="text-xs bg-slate-800 border border-slate-700 text-slate-400 px-2 py-0.5 rounded-full font-mono">Simulador nfdump + rrdtool</span>
+              NetFlow Monitor <span className="text-xs bg-slate-800 border border-slate-700 text-slate-400 px-2 py-0.5 rounded-full font-mono">nfdump + rrdtool</span>
             </h1>
             <p className="text-xs text-slate-400">Coletor NetFlow v5/v9 & Analisador de Tráfego de Alta Fidelidade</p>
           </div>
@@ -563,72 +539,7 @@ export default function App() {
                   </div>
                 </div>
 
-                {/* INJECT ANIMALS SIMULATOR & TEST TOOLS */}
-                <div className="bg-slate-900 border border-slate-800 rounded-xl p-5">
-                  <div className="flex items-center gap-2 mb-3">
-                    <Flame className="w-5 h-5 text-amber-500" />
-                    <div>
-                      <h3 className="text-sm font-semibold text-white">Injetor de Anomalias de Rede (Simulador NetFlow Coletado)</h3>
-                      <p className="text-xs text-slate-400">Force ataques simulados instantâneos para visualizar a detecção automática do motor nfdump + RRDtool</p>
-                    </div>
-                  </div>
 
-                  <div className="grid grid-cols-1 sm:grid-cols-3 gap-3 pt-2">
-                    <button
-                      onClick={() => triggerSimulation("ddos")}
-                      disabled={simulating !== null}
-                      className="bg-rose-950/20 hover:bg-rose-900/40 border border-rose-800/50 hover:border-rose-700 rounded-xl p-4 text-left transition relative overflow-hidden group disabled:opacity-50 cursor-pointer"
-                    >
-                      <div className="absolute right-2 bottom-1 text-rose-500/10 pointer-events-none transition group-hover:scale-110">
-                        <ShieldAlert className="w-16 h-16" />
-                      </div>
-                      <span className="text-xs font-bold text-rose-400 uppercase tracking-widest block">Ataque DDoS SYN</span>
-                      <span className="text-lg font-bold text-white block mt-1">DDoS SYN Flood</span>
-                      <p className="text-slate-400 text-xs mt-1 leading-relaxed">
-                        Injeta 150 fluxos rápidos com pacotes vazios apontados para a porta 80 do Servidor Principal (10.0.1.10).
-                      </p>
-                      <div className="mt-3 inline-flex items-center gap-1 text-xs text-rose-300 font-semibold">
-                        {simulating === "ddos" ? "Injetando fluxo..." : "Injetar Fluxo ☄️"}
-                      </div>
-                    </button>
-
-                    <button
-                      onClick={() => triggerSimulation("scan")}
-                      disabled={simulating !== null}
-                      className="bg-amber-950/20 hover:bg-amber-900/40 border border-amber-800/50 hover:border-amber-700 rounded-xl p-4 text-left transition relative overflow-hidden group disabled:opacity-50 cursor-pointer"
-                    >
-                      <div className="absolute right-2 bottom-1 text-amber-500/10 pointer-events-none transition group-hover:scale-110">
-                        <Search className="w-16 h-16" />
-                      </div>
-                      <span className="text-xs font-bold text-amber-400 uppercase tracking-widest block">Horizontal Scan</span>
-                      <span className="text-lg font-bold text-white block mt-1">Port Scan Lento</span>
-                      <p className="text-slate-400 text-xs mt-1 leading-relaxed">
-                        Executa varredura de portas sequenciais (20 a 120) de forma intermitente de um IP local suspeito.
-                      </p>
-                      <div className="mt-3 inline-flex items-center gap-1 text-xs text-amber-300 font-semibold">
-                        {simulating === "scan" ? "Varrendo portas..." : "Disparar Varredura 🔍"}
-                      </div>
-                    </button>
-
-                    <button
-                      onClick={() => triggerSimulation("exfil")}
-                      disabled={simulating !== null}
-                      className="bg-indigo-950/20 hover:bg-indigo-900/40 border border-indigo-800/50 hover:border-indigo-700 rounded-xl p-4 text-left transition relative overflow-hidden group disabled:opacity-50 cursor-pointer"
-                    >
-                      <div className="absolute right-2 bottom-1 text-indigo-500/10 pointer-events-none transition group-hover:scale-110">
-                        <ArrowUpRight className="w-16 h-16" />
-                      </div>
-                      <span className="text-xs font-bold text-indigo-400 uppercase tracking-widest block">Data Leaking</span>
-                      <span className="text-lg font-bold text-white block mt-1">Exfiltração de Dados</span>
-                      <p className="text-slate-400 text-xs mt-1 leading-relaxed">
-                        Transfere um volume anômalo e de altíssimo throughput (750 MB) do banco de dados para host externo.
-                      </p>
-                      <div className="mt-3 inline-flex items-center gap-1 text-xs text-indigo-300 font-semibold">
-                        {simulating === "exfil" ? "Exfiltrando..." : "Simular Backup Externo 🛰️"}
-                      </div>
-                    </button>
-                  </div>
-                </div>
 
               </div>
 

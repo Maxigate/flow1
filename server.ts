@@ -20,374 +20,131 @@ app.use(express.json());
 const PORT = 3000;
 
 // IN-MEMORY STORAGE (Simulates SQLite/File DB)
-let exporters: Exporter[] = [
-  {
-    id: "exp-01",
-    name: "Router Core WAN",
-    ip: "192.168.100.1",
-    port: 9995,
-    version: "v9",
-    samplingRate: 1,
-    status: "active",
-    addedAt: "2026-06-06T00:00:00Z",
-    lastFlowAt: "2026-06-06T02:33:00Z",
-  },
-  {
-    id: "exp-02",
-    name: "Core SW Server Room",
-    ip: "10.0.1.254",
-    port: 9996,
-    version: "v9",
-    samplingRate: 100,
-    status: "active",
-    addedAt: "2026-06-06T01:15:00Z",
-    lastFlowAt: "2026-06-06T02:33:10Z",
-  },
-  {
-    id: "exp-03",
-    name: "Edge Firewall Lab",
-    ip: "172.16.50.1",
-    port: 2055,
-    version: "ipfix",
-    samplingRate: 1,
-    status: "inactive",
-    addedAt: "2026-06-06T02:00:00Z",
-    lastFlowAt: null,
-  }
-];
-
+let exporters: Exporter[] = [];
 let rrdDatabase: RRDDataPoint[] = [];
 let recentFlows: NetFlowRecord[] = [];
 let alerts: AnomalyAlert[] = [];
 
-// Initialize timeseries data (RRD Emulation)
-function initRRD() {
-  const now = Math.floor(Date.now() / 1000);
-  const fiveMin = 60; // 1-minute steps for detailed demo graphs
-  for (let i = 40; i >= 0; i--) {
-    const timestamp = now - i * fiveMin;
-    const date = new Date(timestamp * 1000);
-    // Baseline traffic metrics
-    const rxMB = 5 * (1 + Math.sin(i / 1.5)) + Math.random() * 2;
-    const txMB = 4 * (1 + Math.cos(i / 2)) + Math.random() * 1.5;
-    
-    rrdDatabase.push({
-      timestamp,
-      formattedTime: date.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' }),
-      rxBytesSec: Math.floor(rxMB * 1024 * 1024),
-      txBytesSec: Math.floor(txMB * 1024 * 1024),
-      rxPacketsSec: Math.floor(rxMB * 230),
-      txPacketsSec: Math.floor(txMB * 210),
-      tcpFlows: Math.floor(rxMB * 4 + txMB * 3),
-      udpFlows: Math.floor(rxMB * 2 + 5),
-      icmpFlows: Math.floor(Math.random() * 2 + 1),
-    });
+
+// API - ENGINES: LIVE TRAFFIC FLOW INGESTION ENDPOINT (PRODUCTION)
+app.post("/api/flows", (req, res) => {
+  const { flows } = req.body;
+  if (!flows || !Array.isArray(flows)) {
+    return res.status(400).json({ error: "Invalid payload format. Expected { flows: [...] }" });
   }
-}
-initRRD();
 
-// Generate Random Network Flows (simulates collector nfcapd background threads)
-function generateNormalFlows(count = 10) {
-  const commonWebIps = ["142.250.191.46", "34.120.45.120", "172.217.16.142", "13.224.23.54", "104.244.42.1"];
-  const internalIps = ["10.0.1.15", "10.0.1.22", "192.168.100.12", "192.168.100.45", "10.0.1.60"];
-  const serverIps = ["10.0.1.10", "10.0.1.200"]; // DB & Web
-  
-  const activeExporters = exporters.filter(e => e.status === "active");
-  if (activeExporters.length === 0) return;
+  const addedFlows: NetFlowRecord[] = [];
+  flows.forEach((item: any) => {
+    const srcIp = item.srcIp || item.src;
+    const dstIp = item.dstIp || item.dst;
+    if (!srcIp || !dstIp) return;
 
-  const protos: ('TCP' | 'UDP' | 'ICMP')[] = ["TCP", "TCP", "TCP", "UDP", "UDP", "ICMP"];
+    const matchedExporter = exporters.find(e => e.ip === item.exporterIp || e.id === item.exporterId);
+    const exporterId = matchedExporter?.id || "exp-external";
+    const exporterName = matchedExporter?.name || "Live Collector Inflow";
 
-  for (let i = 0; i < count; i++) {
-    const exp = activeExporters[Math.floor(Math.random() * activeExporters.length)];
-    const proto = protos[Math.floor(Math.random() * protos.length)];
-    let srcIp = "";
-    let dstIp = "";
-    let srcPort = 0;
-    let dstPort = 0;
-    let bytes = 0;
-    let packets = 0;
-    let flags = "......";
+    // Auto-alerting system based on production thresholds
+    let detectedAnomaly = false;
+    let anomalyType: 'DDoS Attack' | 'Port Scan' | 'Data Exfiltration' | 'Protocol Drift' | null = null;
+    let anomalyDesc = "";
+    let severity: 'critical' | 'warning' | 'info' = 'info';
 
-    const isOutgoing = Math.random() > 0.4;
-    
-    if (proto === "TCP") {
-      srcPort = Math.floor(Math.random() * 16384) + 49152;
-      dstPort = [80, 443, 22, 3306, 8080][Math.floor(Math.random() * 5)];
-      
-      if (isOutgoing) {
-        srcIp = internalIps[Math.floor(Math.random() * internalIps.length)];
-        dstIp = commonWebIps[Math.floor(Math.random() * commonWebIps.length)];
-      } else {
-        srcIp = commonWebIps[Math.floor(Math.random() * commonWebIps.length)];
-        dstIp = serverIps[Math.floor(Math.random() * serverIps.length)];
-      }
-      
-      packets = Math.floor(Math.random() * 50) + 1;
-      bytes = packets * (Math.floor(Math.random() * 1200) + 64);
-      flags = [".A....", ".AP...", ".A...S", ".AP.S."][Math.floor(Math.random() * 4)];
-    } else if (proto === "UDP") {
-      srcPort = Math.floor(Math.random() * 10000) + 30000;
-      dstPort = [53, 123, 161, 443][Math.floor(Math.random() * 4)];
-      if (dstPort === 53) {
-        srcIp = internalIps[Math.floor(Math.random() * internalIps.length)];
-        dstIp = "8.8.8.8";
-        packets = 1;
-        bytes = Math.floor(Math.random() * 80) + 45;
-      } else {
-        srcIp = internalIps[Math.floor(Math.random() * internalIps.length)];
-        dstIp = commonWebIps[Math.floor(Math.random() * commonWebIps.length)];
-        packets = Math.floor(Math.random() * 12) + 1;
-        bytes = packets * (Math.floor(Math.random() * 400) + 60);
-      }
-    } else {
-      // ICMP
-      srcIp = internalIps[Math.floor(Math.random() * internalIps.length)];
-      dstIp = "8.8.8.8";
-      srcPort = 0;
-      dstPort = 8; // Echo request
-      packets = Math.floor(Math.random() * 4) + 1;
-      bytes = packets * 64;
+    const packets = parseInt(item.packets || item.pkts) || 1;
+    const bytes = parseInt(item.bytes) || 64;
+    const proto = (item.proto || "TCP").toUpperCase() as 'TCP' | 'UDP' | 'ICMP' | 'OTHER';
+    const srcPort = parseInt(item.srcPort || item.sport) || 0;
+    const dstPort = parseInt(item.dstPort || item.dport) || 0;
+
+    // 1. Extreme bandwidth exfiltration rule (e.g., > 100MB in a flow)
+    if (bytes > 100 * 1024 * 1024) {
+      detectedAnomaly = true;
+      anomalyType = "Data Exfiltration";
+      severity = "critical";
+      anomalyDesc = `High throughput data transfer (${(bytes / 1024 / 1024).toFixed(1)} MB) observed from ${srcIp} to external ${dstIp}.`;
+    }
+    // 2. High-volume target SYN flood rule (> 1000 packets targeting single port)
+    else if (packets > 500 && (item.tcpFlags || "").includes("S")) {
+      detectedAnomaly = true;
+      anomalyType = "DDoS Attack";
+      severity = "critical";
+      anomalyDesc = `Potential DDoS attack detected! High packet density (${packets} pkts with SYN flags) from ${srcIp} targeting ${dstIp}:${dstPort}.`;
     }
 
     const flow: NetFlowRecord = {
       id: "f-" + Math.random().toString(36).substr(2, 9),
-      timestamp: new Date().toISOString(),
+      timestamp: item.timestamp || new Date().toISOString(),
       srcIp,
       dstIp,
       srcPort,
       dstPort,
-      proto: proto === "ICMP" ? "ICMP" : (proto === "TCP" ? "TCP" : "UDP"),
+      proto,
       packets,
       bytes,
-      tcpFlags: flags,
-      exporterId: exp.id,
-      exporterName: exp.name,
+      tcpFlags: item.tcpFlags || item.flags || "......",
+      exporterId,
+      exporterName
     };
-
     recentFlows.unshift(flow);
-    exp.lastFlowAt = flow.timestamp;
-  }
+    addedFlows.push(flow);
 
-  // Cap recent flows capacity
-  if (recentFlows.length > 500) {
-    recentFlows = recentFlows.slice(0, 500);
-  }
-}
+    if (matchedExporter) {
+      matchedExporter.lastFlowAt = flow.timestamp;
+    }
 
-// Background simulation loop
-let simulationInterval = setInterval(() => {
-  generateNormalFlows(12);
-  
-  // Also append to timeseries RRD
-  const now = Math.floor(Date.now() / 1000);
-  const lastXSecs = recentFlows.slice(0, 15);
-  
-  let rx = 0;
-  let tx = 0;
-  let rxPkts = 0;
-  let txPkts = 0;
-  let tcps = 0;
-  let udps = 0;
-  let icmps = 0;
+    if (detectedAnomaly && anomalyType) {
+      const alert: AnomalyAlert = {
+        id: "alt-" + Math.random().toString(36).substr(2, 9),
+        timestamp: flow.timestamp,
+        type: anomalyType,
+        severity,
+        description: anomalyDesc,
+        sourceIp: srcIp,
+        destinationIp: dstIp,
+        metrics: {
+          bytes,
+          packets
+        },
+        status: "active"
+      };
+      alerts.unshift(alert);
+    }
 
-  lastXSecs.forEach(f => {
-    // Arbitrarily split in/out based on internal destination
-    const isLocalDst = f.dstIp.startsWith("10.") || f.dstIp.startsWith("192.168.");
-    if (isLocalDst) {
-      rx += f.bytes;
-      rxPkts += f.packets;
+    // Dynamic RRD database updater
+    const timestamp = Math.floor(new Date(flow.timestamp).getTime() / 1000);
+    const isLocalDst = dstIp.startsWith("10.") || dstIp.startsWith("192.168.");
+    const rx = isLocalDst ? bytes : 0;
+    const tx = isLocalDst ? 0 : bytes;
+
+    const lastRrd = rrdDatabase[rrdDatabase.length - 1];
+    if (lastRrd && (timestamp - lastRrd.timestamp < 10)) {
+      lastRrd.rxBytesSec += rx;
+      lastRrd.txBytesSec += tx;
+      lastRrd.rxPacketsSec += isLocalDst ? packets : 0;
+      lastRrd.txPacketsSec += isLocalDst ? 0 : packets;
+      if (proto === "TCP") lastRrd.tcpFlows++;
+      else if (proto === "UDP") lastRrd.udpFlows++;
+      else if (proto === "ICMP") lastRrd.icmpFlows++;
     } else {
-      tx += f.bytes;
-      txPkts += f.packets;
+      rrdDatabase.push({
+        timestamp,
+        formattedTime: new Date(timestamp * 1000).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' }),
+        rxBytesSec: rx,
+        txBytesSec: tx,
+        rxPacketsSec: isLocalDst ? packets : 0,
+        txPacketsSec: isLocalDst ? 0 : packets,
+        tcpFlows: proto === "TCP" ? 1 : 0,
+        udpFlows: proto === "UDP" ? 1 : 0,
+        icmpFlows: proto === "ICMP" ? 1 : 0
+      });
+      if (rrdDatabase.length > 80) rrdDatabase.shift();
     }
-    if (f.proto === "TCP") tcps++;
-    else if (f.proto === "UDP") udps++;
-    else icmps++;
   });
 
-  // Keep traffic fluctuations alive
-  const amp = 1.0 + Math.random() * 0.4;
-  rrdDatabase.push({
-    timestamp: now,
-    formattedTime: new Date(now * 1000).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' }),
-    rxBytesSec: Math.floor(rx * amp) || Math.floor(2.1 * 1024 * 1024 + Math.random() * 500000),
-    txBytesSec: Math.floor(tx * amp) || Math.floor(1.6 * 1024 * 1024 + Math.random() * 400000),
-    rxPacketsSec: Math.floor(rxPkts) || Math.floor(120 + Math.random() * 50),
-    txPacketsSec: Math.floor(txPkts) || Math.floor(95 + Math.random() * 40),
-    tcpFlows: tcps || Math.floor(15 + Math.random() * 10),
-    udpFlows: udps || Math.floor(8 + Math.random() * 6),
-    icmpFlows: icmps || Math.floor(1 + Math.random() * 3)
-  });
-
-  if (rrdDatabase.length > 80) {
-    rrdDatabase.shift();
-  }
-}, 4000);
-
-// TRIGGER MOCK EVENTS / ANOMALIES
-app.post("/api/sim/trigger", (req, res) => {
-  const { type } = req.body;
-  const nowStr = new Date().toISOString();
-  let generatedBytes = 0;
-  let generatedPackets = 0;
-  
-  if (type === "ddos") {
-    const targetIp = "10.0.1.10";
-    const sourceIps = Array.from({length: 40}, (_, i) => `192.0.2.${Math.floor(Math.random() * 254) + 1}`);
-    const activeExporters = exporters.filter(e => e.status === "active");
-    const exp = activeExporters[0] || exporters[0];
-
-    // Generate heavy flood flows
-    for (let i = 0; i < 150; i++) {
-      const src = sourceIps[Math.floor(Math.random() * sourceIps.length)];
-      const packets = Math.floor(Math.random() * 1000) + 400;
-      const bytes = packets * 40; // Small packet SYN flood
-      const flow: NetFlowRecord = {
-        id: "ddos-" + i + "-" + Math.random().toString(36).substr(2, 5),
-        timestamp: nowStr,
-        srcIp: src,
-        dstIp: targetIp,
-        srcPort: Math.floor(Math.random() * 60000) + 2000,
-        dstPort: 80,
-        proto: "TCP",
-        packets,
-        bytes,
-        tcpFlags: ".....S", // SYN only
-        exporterId: exp.id,
-        exporterName: exp.name,
-      };
-      recentFlows.unshift(flow);
-      generatedBytes += bytes;
-      generatedPackets += packets;
-    }
-
-    const alert: AnomalyAlert = {
-      id: "alt-" + Math.random().toString(36).substr(2, 9),
-      timestamp: nowStr,
-      type: "DDoS Attack",
-      severity: "critical",
-      description: `Detected potential TCP SYN Flood on Webserver (10.0.1.10) with ${generatedPackets} packets from high-volume multiple sources on port 80.`,
-      sourceIp: "Various (External Botnet)",
-      destinationIp: targetIp,
-      metrics: {
-        bytes: generatedBytes,
-        packets: generatedPackets,
-        flowsCount: 150
-      },
-      status: "active"
-    };
-    alerts.unshift(alert);
-
-    // Dynamic push of anomalous stats to RRD to show immediate spike
-    const rrdNow = Math.floor(Date.now() / 1000);
-    const lastRrd = rrdDatabase[rrdDatabase.length - 1];
-    if (lastRrd) {
-      lastRrd.rxBytesSec += generatedBytes;
-      lastRrd.rxPacketsSec += generatedPackets;
-      lastRrd.tcpFlows += 150;
-    }
-
-    return res.json({ success: true, message: "DDoS attack simulation triggered successfully.", alert });
-
-  } else if (type === "scan") {
-    const srcIp = "192.168.100.99";
-    const dstIp = "10.0.1.200";
-    const activeExporters = exporters.filter(e => e.status === "active");
-    const exp = activeExporters[0] || exporters[0];
-
-    // Generate port scanning flows across 60 sequential ports
-    for (let p = 20; p <= 120; p++) {
-      if (Math.random() > 0.4) continue;
-      const flow: NetFlowRecord = {
-        id: "scan-" + p + "-" + Math.random().toString(36).substr(2, 5),
-        timestamp: nowStr,
-        srcIp,
-        dstIp,
-        srcPort: 52410,
-        dstPort: p,
-        proto: "TCP",
-        packets: 1,
-        bytes: 40,
-        tcpFlags: ".....S",
-        exporterId: exp.id,
-        exporterName: exp.name,
-      };
-      recentFlows.unshift(flow);
-      generatedPackets++;
-      generatedBytes += 40;
-    }
-
-    const alert: AnomalyAlert = {
-      id: "alt-" + Math.random().toString(36).substr(2, 9),
-      timestamp: nowStr,
-      type: "Port Scan",
-      severity: "warning",
-      description: `Horizontal Port Scan detected from LAN host ${srcIp} pointing to ${dstIp} targeting ports 20-120.`,
-      sourceIp: srcIp,
-      destinationIp: dstIp,
-      metrics: {
-        packets: generatedPackets,
-        bytes: generatedBytes,
-        uniquePorts: 60
-      },
-      status: "active"
-    };
-    alerts.unshift(alert);
-    return res.json({ success: true, message: "Port Scan simulation triggered.", alert });
-
-  } else if (type === "exfil") {
-    const srcIp = "10.0.1.22"; // Sensitive database host
-    const dstIp = "203.0.113.88"; // Rogue external host
-    const activeExporters = exporters.filter(e => e.status === "active");
-    const exp = activeExporters[0] || exporters[0];
-
-    const bytesExfiltrated = 750 * 1024 * 1024; // 750 MB in few packets
-    const packets = 520000;
-
-    const flow: NetFlowRecord = {
-      id: "exfil-" + Math.random().toString(36).substr(2, 9),
-      timestamp: nowStr,
-      srcIp,
-      dstIp,
-      srcPort: 3306,
-      dstPort: 443,
-      proto: "TCP",
-      packets,
-      bytes: bytesExfiltrated,
-      tcpFlags: ".A.P..",
-      exporterId: exp.id,
-      exporterName: exp.name,
-    };
-
-    recentFlows.unshift(flow);
-
-    const alert: AnomalyAlert = {
-      id: "alt-" + Math.random().toString(36).substr(2, 9),
-      timestamp: nowStr,
-      type: "Data Exfiltration",
-      severity: "critical",
-      description: `Suspicious data transfer of 750 MB detected from DB Zone (${srcIp}) to unexpected external network (${dstIp}) via TCP 443.`,
-      sourceIp: srcIp,
-      destinationIp: dstIp,
-      metrics: {
-        bytes: bytesExfiltrated,
-        packets: packets
-      },
-      status: "active"
-    };
-    alerts.unshift(alert);
-
-    // Spike the out traffic in RRD
-    const lastRrd = rrdDatabase[rrdDatabase.length - 1];
-    if (lastRrd) {
-      lastRrd.txBytesSec += bytesExfiltrated;
-      lastRrd.txPacketsSec += packets;
-    }
-
-    return res.json({ success: true, message: "Exfiltration triggered.", alert });
+  if (recentFlows.length > 1000) {
+    recentFlows = recentFlows.slice(0, 1000);
   }
 
-  res.status(400).json({ error: "Invalid anomaly type requested." });
+  res.json({ success: true, count: addedFlows.length });
 });
 
 // API - EXPORTERS
