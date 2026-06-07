@@ -1,0 +1,6 @@
+{
+  "name": "NetFlow Traffic Analyzer",
+  "description": "Monitor and analyze network traffic in real-time, register Flow exporters, perform nfdump query filtering, and view RRDtool performance telemetry.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
